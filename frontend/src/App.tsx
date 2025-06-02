@@ -1,23 +1,31 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Layout } from './components/Layout';
 import { AIAssistant } from './components/AIAssistant';
 import { AuthForm } from './components/Auth/AuthForm';
 import { useAuthStore } from './store/authStore';
 import { useAppearanceStore } from './store/appearanceStore';
+import { connectSocket } from './utils/socket';
 
 function App() {
-  const user = useAuthStore(state => state.user);
-  const theme = useAppearanceStore(state => state.theme);
+  const user = useAuthStore((s) => s.user);
+  const token = useAuthStore((s) => s.token);
+  const theme = useAppearanceStore((s) => s.theme);
 
-  // Apply theme class to html element
-  React.useEffect(() => {
-    const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+  useEffect(() => {
+    const isDark = theme === 'dark' ||
+      (theme === 'system' &&
+        window.matchMedia('(prefers-color-scheme: dark)').matches);
     document.documentElement.classList.toggle('dark', isDark);
   }, [theme]);
 
-  if (!user) {
-    return <AuthForm />;
-  }
+  useEffect(() => {
+    if (token) {
+      console.log("🔌 Connecting socket with token...");
+      connectSocket(token);
+    }
+  }, [token]);
+
+  if (!user) return <AuthForm />;
 
   return (
     <Layout>

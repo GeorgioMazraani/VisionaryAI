@@ -1,19 +1,31 @@
+/**************************************
+ * server.js  – REST + Socket.IO
+ **************************************/
+
 /* ─────────── Core Packages ─────────── */
 const express = require('express');
 const cors    = require('cors');
 const dotenv  = require('dotenv');
 const events  = require('events');
 const path    = require('path');
+const http    = require('http');                  // ✅ NEW – raw HTTP server
 
 /* ─────────── DB (models + associations) ─────────── */
-const { sequelize } = require('./Models/index');   // auto-loads associations
+const { sequelize } = require('./Models/index');  // auto-loads associations
+
+/* ─────────── Socket.IO helper ───────────
+   Adjust this path if you put the file elsewhere.
+   The file should export:  module.exports.registerSocket = (server)=>{...}
+   ------------------------------------------------------ */
+const { registerSocket } = require('./socket');   // ✅ NEW
 
 dotenv.config();
 events.EventEmitter.defaultMaxListeners = 20;
 
 /* ─────────── Express Setup ─────────── */
-const app  = express();
-const PORT = process.env.PORT || 5000;
+const app    = express();
+const server = http.createServer(app);            // ✅ wrap Express for sockets
+const PORT   = process.env.PORT || 5000;
 
 /* Middleware */
 app.use(cors({ origin: '*' }));
@@ -23,7 +35,9 @@ app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 /* Health Check */
-app.get('/', (_req, res) => res.status(200).json({ message: 'API is running!' }));
+app.get('/', (_req, res) =>
+  res.status(200).json({ message: 'API is running!' })
+);
 
 /* ─────────── Route Modules ─────────── */
 app.use('/api/users',          require('./Routes/userRoutes'));
@@ -50,11 +64,14 @@ app.use((err, _req, res, _next) => {
     await sequelize.authenticate();
     console.log('✓ Database connection established');
 
-    await sequelize.sync();  // or { alter:true } in dev
+    await sequelize.sync();            // { alter:true } in dev if desired
     console.log('✓ Models synced');
 
-    app.listen(PORT, () =>
-      console.log(`Server listening at http://localhost:${PORT}`)
+    /* ── Initialise WebSockets before listening ── */
+    registerSocket(server);            // ✅ enable real-time events
+
+    server.listen(PORT, () =>
+      console.log(`🚀 REST & WebSocket server running on http://localhost:${PORT}`)
     );
   } catch (err) {
     console.error('Unable to start server:', err);

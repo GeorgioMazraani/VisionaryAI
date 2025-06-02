@@ -1,8 +1,8 @@
 // src/controllers/messageController.js
 const path = require('path');
 const MessageService = require('../Services/messageService');
-const AudioLogService=require('../Models/AudioLog');
-const ImageCaptureService=require('../Models/ImageCapture');
+const AudioLogService = require('../Models/AudioLog');
+const ImageCaptureService = require('../Models/ImageCapture');
 /** Helper to send JSON */
 const send = (res, status, data) => res.status(status).json(data);
 
@@ -74,7 +74,8 @@ class MessageController {
         limit: Number(limit) || 50,
         offset: Number(offset) || 0,
       });
-      return send(res, 200, result);
+      return send(res, 200, result); // ✅ will now be just an array of messages
+
     } catch (err) {
       return next(err);
     }

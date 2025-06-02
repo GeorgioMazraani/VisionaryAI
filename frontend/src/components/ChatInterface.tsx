@@ -1,189 +1,283 @@
-import React, { useRef, useEffect, useState, FormEvent } from 'react';
-import { Message } from '../types';
-import { ImageUpload } from './ImageUpload';
-import { useAppearanceStore } from '../store/appearanceStore';
+/* ──────────────────────────────────────────────────────────
+   ChatInterface.tsx  (stable hooks, real-time)
+   ------------------------------------------------------------------ */
+
+import React, {
+  useRef,
+  useEffect,
+  useState,
+  FormEvent,
+  useCallback,
+} from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-interface ChatInterfaceProps {
-  messages: Message[];
-  isSpeaking: boolean;
-  currentImage: string | null;
-  onSendMessage: (text: string, image?: string | null) => void;
-}
+import MessageService, {
+  Message,
+  CreateMessageInput,
+} from '../services/MessageService';
 
-export const ChatInterface: React.FC<ChatInterfaceProps> = ({
-  messages,
-  isSpeaking,
-  currentImage,
-  onSendMessage
-}) => {
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [inputText, setInputText] = useState('');
+import { getSocket }          from '../utils/socket';
+import { useSocketStore }     from '../store/socketStore';
+import { useChatStore }       from '../store/chatStore';
+import { useAuthStore }       from '../store/authStore';
+import { useAppearanceStore } from '../store/appearanceStore';
+
+import { ImageUpload } from './ImageUpload';
+
+/* helper ▸ dataURL → File */
+const dataURLtoFile = (dataUrl: string, filename = 'upload.png'): File => {
+  const [meta, b64] = dataUrl.split(',');
+  const mime = meta.match(/:(.*?);/)?.[1] ?? 'image/png';
+  const bin  = atob(b64);
+  const u8   = Uint8Array.from(bin, ch => ch.charCodeAt(0));
+  return new File([u8], filename, { type: mime });
+};
+
+export const ChatInterface: React.FC = () => {
+  /* ───────── global stores ───────── */
+  const { currentConversationId, reloadConversations } = useChatStore();
+  const user                   = useAuthStore((s) => s.user);
+  const socketReady            = useSocketStore((s) => s.socketReady);
+  const { fontSize, theme }    = useAppearanceStore();
+
+  /* ───────── local state ───────── */
+  const [messages, setMessages]       = useState<Message[]>([]);
+  const [inputText, setInputText]     = useState('');
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
-  const { fontSize, messageDensity, theme } = useAppearanceStore();
-  
-  const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
 
+  /* ───────── refs ───────── */
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const socketRef      = useRef<ReturnType<typeof getSocket>>();
+
+  /* ───────── derived ───────── */
+  const isDark =
+    theme === 'dark' ||
+    (theme === 'system' &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches);
+
+  /* 1️⃣ assign socket once ready */
   useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
+    if (socketReady && !socketRef.current) {
+      socketRef.current = getSocket();
+      console.log('✅ socket assigned', socketRef.current.id);
     }
+  }, [socketReady]);
+
+  /* 2️⃣ join / leave room when conversation changes */
+  useEffect(() => {
+    if (!socketReady) return;          // guard inside hook body (✅ OK)
+    const socket = socketRef.current;
+    if (!socket) return;
+
+    // clean slate
+    socket.off('newMessage');
+    socket.off('messageEdited');
+    socket.off('messageRemoved');
+
+    if (!currentConversationId) {
+      setMessages([]);
+      return;
+    }
+
+    socket.emit('joinConversation', { conversationId: currentConversationId });
+
+    MessageService.list(currentConversationId).then(setMessages);
+
+    socket.on('newMessage', (msg: Message) => {
+      if (msg.conversation_id !== Number(currentConversationId)) return;
+      setMessages((prev) => [...prev, msg]);
+    });
+
+    socket.on('messageEdited', ({ messageId, content }) => {
+      setMessages((prev) =>
+        prev.map((m) => (m.id === messageId ? { ...m, message_text: content } : m)),
+      );
+    });
+
+    socket.on('messageRemoved', ({ messageId }) => {
+      setMessages((prev) => prev.filter((m) => m.id !== messageId));
+    });
+
+    return () => {
+      socket.emit('leaveConversation', { conversationId: currentConversationId });
+      socket.off('newMessage');
+      socket.off('messageEdited');
+      socket.off('messageRemoved');
+    };
+  }, [socketReady, currentConversationId]);
+
+  /* 3️⃣ autoscroll */
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  /* 4️⃣ send message helper */
+  const sendMessage = useCallback(
+    async (text: string, imageDataUrl?: string | null) => {
+      if (!user || !currentConversationId) return;
+
+      const socket = socketRef.current;
+      const base: Omit<CreateMessageInput, 'conversation_id' | 'sender'> = {};
+
+      if (text)         base.message_text = text;
+      if (imageDataUrl) base.file         = dataURLtoFile(imageDataUrl);
+
+      const payload: CreateMessageInput = {
+        conversation_id: Number(currentConversationId),
+        sender: 'user',
+        ...base,
+      };
+
+      if (socket?.connected) {
+        socket.emit('sendMessage', {
+          conversationId: payload.conversation_id,
+          text: payload.message_text ?? null,
+        });
+      } else {
+        const saved = await MessageService.send(payload);
+        setMessages((prev) => [...prev, saved]);
+        reloadConversations();
+      }
+    },
+    [user, currentConversationId, reloadConversations],
+  );
+
+  /* 5️⃣ form submit */
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
-    if (inputText.trim() || uploadedImage) {
-      onSendMessage(inputText.trim(), uploadedImage);
-      setInputText('');
-      setUploadedImage(null);
-    }
+    if (!inputText.trim() && !uploadedImage) return;
+    sendMessage(inputText.trim(), uploadedImage);
+    setInputText('');
+    setUploadedImage(null);
   };
 
-  const messageVariants = {
-    hidden: { opacity: 0, y: 20 },
-    visible: { opacity: 1, y: 0 },
-    exit: { opacity: 0, scale: 0.95 }
-  };
+  /* ───────── conditional UIs (no early hook returns) ───────── */
+  let body: React.ReactNode;
 
-  return (
-    <div className="flex-1 overflow-hidden flex flex-col animate-fadeIn">
-      <motion.div 
-        className={`flex-1 overflow-y-auto p-4 ${isDark ? 'bg-gray-800/50' : 'bg-white/50'} rounded-xl`}
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.3 }}
-      >
-        <div className={`space-y-${messageDensity === 'compact' ? '2' : messageDensity === 'spacious' ? '6' : '4'}`}>
+  if (!socketReady) {
+    body = (
+      <div className="flex-1 flex items-center justify-center text-gray-400">
+        Connecting…
+      </div>
+    );
+  } else if (!currentConversationId) {
+    body = (
+      <div className="flex-1 flex items-center justify-center text-gray-400">
+        Select or start a conversation
+      </div>
+    );
+  } else {
+    /* helpers */
+    const bubbleCls = (mine: boolean) =>
+      `max-w-[85%] rounded-2xl p-3 transition shadow ${
+        mine
+          ? 'bg-blue-600 text-white rounded-tr-none'
+          : isDark
+          ? 'bg-gray-700 text-white rounded-tl-none'
+          : 'bg-gray-100 text-gray-900 rounded-tl-none'
+      }`;
+
+    body = (
+      <div className="flex-1 flex flex-col overflow-hidden animate-fadeIn">
+        {/* messages list */}
+        <motion.div
+          className={`flex-1 overflow-y-auto p-4 ${
+            isDark ? 'bg-gray-800/50' : 'bg-white/50'
+          } rounded-xl`}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+        >
           <AnimatePresence mode="popLayout">
-            {messages.map((message, index) => (
-              <motion.div 
-                key={index}
-                className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
-                variants={messageVariants}
-                initial="hidden"
-                animate="visible"
-                exit="exit"
-                transition={{ 
-                  type: "spring",
-                  stiffness: 500,
-                  damping: 30,
-                  delay: index * 0.1 
-                }}
+            {messages.map((m, i) => (
+              <motion.div
+                key={m.id}
+                className={`flex ${
+                  m.sender === 'user' ? 'justify-end' : 'justify-start'
+                }`}
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95 }}
+                transition={{ delay: i * 0.04 }}
               >
-                <motion.div 
-                  className={`max-w-[85%] rounded-2xl p-3 transition-all hover:shadow-lg ${
-                    message.role === 'user' 
-                      ? 'bg-blue-600 text-white rounded-tr-none' 
-                      : message.isError 
-                        ? 'bg-red-600/20 text-red-500 rounded-tl-none' 
+                <div className={bubbleCls(m.sender === 'user')}>
+                  {m.message_type === 'image' ? (
+                    <img
+                      src={m.message_text}
+                      alt="sent"
+                      className="rounded-lg max-h-40 mb-2"
+                    />
+                  ) : (
+                    <p
+                      className={
+                        fontSize === 'small'
+                          ? 'text-sm'
+                          : fontSize === 'large'
+                          ? 'text-lg'
+                          : 'text-base'
+                      }
+                    >
+                      {m.message_text}
+                    </p>
+                  )}
+                  <div
+                    className={`text-[10px] text-right ${
+                      m.sender === 'user'
+                        ? 'opacity-70'
                         : isDark
-                          ? 'bg-gray-700 text-white rounded-tl-none'
-                          : 'bg-gray-100 text-gray-900 rounded-tl-none'
-                  } ${isSpeaking && index === messages.length - 1 && message.role === 'assistant' ? 'border-2 border-blue-400 animate-pulse' : ''}`}
-                  whileHover={{ scale: 1.02 }}
-                  transition={{ type: "spring", stiffness: 400, damping: 17 }}
-                >
-                  <div className={`space-y-2 ${fontSize === 'small' ? 'text-sm' : fontSize === 'large' ? 'text-lg' : 'text-base'}`}>
-                    {message.role === 'user' && message.image && (
-                      <motion.div 
-                        className="mb-2"
-                        initial={{ opacity: 0, scale: 0.8 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        transition={{ type: "spring", stiffness: 500, damping: 30 }}
-                      >
-                        <img 
-                          src={message.image} 
-                          alt="Uploaded" 
-                          className="rounded-lg max-h-40 w-auto" 
-                        />
-                      </motion.div>
-                    )}
-                    <p>{message.content}</p>
-                    <div className={`text-right text-xs ${message.role === 'user' ? 'opacity-70' : isDark ? 'text-gray-400' : 'text-gray-600'}`}>
-                      {new Date(message.timestamp).toLocaleTimeString([], { 
-                        hour: '2-digit', 
-                        minute: '2-digit' 
-                      })}
-                      {isSpeaking && index === messages.length - 1 && message.role === 'assistant' && (
-                        <motion.span 
-                          className="ml-2"
-                          animate={{ opacity: [1, 0.5, 1] }}
-                          transition={{ duration: 1.5, repeat: Infinity }}
-                        >
-                          🔊
-                        </motion.span>
-                      )}
-                    </div>
+                        ? 'text-gray-400'
+                        : 'text-gray-600'
+                    }`}
+                  >
+                    {new Date(m.created_at).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
                   </div>
-                </motion.div>
+                </div>
               </motion.div>
             ))}
           </AnimatePresence>
-          
-          {currentImage && (
-            <motion.div 
-              className="flex justify-end"
-              initial={{ opacity: 0, scale: 0.8 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.8 }}
-              transition={{ type: "spring", stiffness: 500, damping: 30 }}
-            >
-              <div className={`${isDark ? 'bg-blue-600/20' : 'bg-blue-100'} rounded-2xl p-3 max-w-[85%]`}>
-                <img 
-                  src={currentImage} 
-                  alt="Current capture" 
-                  className="rounded-lg max-h-40 w-auto" 
-                />
-                <p className={`text-sm text-center mt-2 ${isDark ? 'text-gray-300' : 'text-gray-600'}`}>
-                  Current camera view
-                </p>
-              </div>
-            </motion.div>
-          )}
-          
           <div ref={messagesEndRef} />
-        </div>
-      </motion.div>
+        </motion.div>
 
-      <motion.form 
-        onSubmit={handleSubmit} 
-        className={`mt-4 p-4 ${isDark ? 'bg-gray-800' : 'bg-white'} rounded-xl shadow-lg`}
-        initial={{ y: 20, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        transition={{ type: "spring", stiffness: 500, damping: 30 }}
-      >
-        <div className="flex flex-col gap-3">
+        {/* composer */}
+        <motion.form
+          onSubmit={handleSubmit}
+          className={`mt-4 p-4 ${
+            isDark ? 'bg-gray-800' : 'bg-white'
+          } rounded-xl shadow-lg`}
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+        >
           <ImageUpload
-            onImageSelect={(dataUrl) => setUploadedImage(dataUrl)}
+            onImageSelect={setUploadedImage}
             selectedImage={uploadedImage}
             onClear={() => setUploadedImage(null)}
           />
-          
-          <div className="flex gap-2">
-            <motion.input
-              type="text"
+
+          <div className="flex gap-2 mt-3">
+            <input
+              className={`flex-1 rounded-lg px-4 py-2 focus:outline-none ${
+                isDark ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-900'
+              }`}
+              placeholder="Type a message…"
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
-              placeholder="Type a message..."
-              className={`flex-1 ${isDark ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-900'} rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500 transition-all hover:shadow-lg ${
-                fontSize === 'small' ? 'text-sm' : fontSize === 'large' ? 'text-lg' : 'text-base'
-              }`}
-              whileFocus={{ scale: 1.01 }}
-              transition={{ type: "spring", stiffness: 400, damping: 17 }}
             />
-            <motion.button
+
+            <button
               type="submit"
               disabled={!inputText.trim() && !uploadedImage}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-all hover:shadow-lg disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
-              transition={{ type: "spring", stiffness: 400, damping: 17 }}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
             >
               Send
-            </motion.button>
+            </button>
           </div>
-        </div>
-      </motion.form>
-    </div>
-  );
+        </motion.form>
+      </div>
+    );
+  }
+
+  /* ───── final render (single return) ───── */
+  return <>{body}</>;
 };

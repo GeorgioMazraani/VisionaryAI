@@ -21,18 +21,22 @@ class MessageService {
   }
 
   /** List messages with optional filters + pagination */
-  static async list({ conversationId, since, limit = 50, offset = 0 } = {}) {
-    const where = {};
-    if (conversationId) where.conversation_id = conversationId;
-    if (since)         where.created_at      = { [Op.gt]: since };
+/** List messages with optional filters + pagination */
+static async list({ conversationId, since, limit = 50, offset = 0 } = {}) {
+  const where = {};
+  if (conversationId) where.conversation_id = conversationId;
+  if (since)         where.created_at      = { [Op.gt]: since };
 
-    return Message.findAndCountAll({
-      where,
-      order: [['created_at', 'ASC']],
-      limit,
-      offset,
-    });
-  }
+  const { rows } = await Message.findAndCountAll({
+    where,
+    order: [['created_at', 'ASC']],
+    limit,
+    offset,
+  });
+
+  return rows; // ✅ only return the messages array
+}
+
 
   /** Delete a message */
   static async delete(id) {

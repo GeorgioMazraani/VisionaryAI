@@ -5,10 +5,19 @@ const http = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
-/* Auto-attach JWT if present */
 http.interceptors.request.use((config) => {
-  const token = localStorage.getItem("token");
-  if (token) config.headers.Authorization = `Bearer ${token}`;
+  try {
+    const raw = localStorage.getItem("auth-storage");
+    const parsed = raw ? JSON.parse(raw) : null;
+    const token = parsed?.state?.token;
+
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+  } catch (err) {
+    console.warn("⚠️ Failed to attach token:", err);
+  }
+
   return config;
 });
 

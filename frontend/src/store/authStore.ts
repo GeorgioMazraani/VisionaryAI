@@ -28,7 +28,6 @@ export const useAuthStore = create<AuthState>()(
         const { data } = await UserService.login({ email, password });
         const { token, user } = data;
 
-        localStorage.setItem("token", token);
         set({ user, token });
       },
 
@@ -38,7 +37,6 @@ export const useAuthStore = create<AuthState>()(
         const { data } = await UserService.createUser({ email, password, username });
         const { token, user } = data;
 
-        localStorage.setItem("token", token);
         set({ user, token });
       },
 

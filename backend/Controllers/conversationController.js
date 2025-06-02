@@ -29,6 +29,19 @@ class ConversationController {
       return next(err);
     }
   }
+  // PATCH /api/conversations/:id
+static async update(req, res, next) {
+  try {
+    const { title } = req.body;
+    if (!title) return send(res, 400, { error: "Title is required" });
+
+    const conversation = await ConversationService.updateTitle(req.params.id, title);
+    return send(res, 200, conversation);
+  } catch (err) {
+    return next(err);
+  }
+}
+
 
   // GET /api/conversations
   static async list(req, res, next) {

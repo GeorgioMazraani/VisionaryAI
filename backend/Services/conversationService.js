@@ -35,6 +35,13 @@ class ConversationService {
     convo.ended_at = new Date();
     return convo.save();
   }
+  /** Update the title of a conversation */
+static async updateTitle(id, newTitle) {
+  const convo = await ConversationService.findById(id);
+  convo.title = newTitle;
+  return convo.save();
+}
+
 
   /** Hard-delete a conversation */
   static async delete(id) {
