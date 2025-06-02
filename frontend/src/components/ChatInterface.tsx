@@ -1,5 +1,5 @@
 /* ──────────────────────────────────────────────────────────
-   ChatInterface.tsx – ChatGPT-like flow + Copy-able code
+   ChatInterface.tsx – ChatGPT-like flow + Copy + TTS
    ------------------------------------------------------------------ */
 
 import React, {
@@ -17,16 +17,20 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import copy from 'copy-to-clipboard';
 
+/* stores / hooks */
+import { getSocket } from '../utils/socket';
 import MessageService, {
   Message,
   CreateMessageInput,
 } from '../services/MessageService';
-import { getSocket }          from '../utils/socket';
-import { useSocketStore }     from '../store/socketStore';
-import { useChatStore }       from '../store/chatStore';
-import { useAuthStore }       from '../store/authStore';
+import { useSocketStore } from '../store/socketStore';
+import { useChatStore } from '../store/chatStore';
+import { useAuthStore } from '../store/authStore';
 import { useAppearanceStore } from '../store/appearanceStore';
-import { ImageUpload }        from './ImageUpload';
+import { useVoiceStore } from '../store/voiceStore';
+import { useTextToSpeech } from '../hooks/useTextToSpeech';
+
+import { ImageUpload } from './ImageUpload';
 
 /* ──────────────────────────────────────────────────────────
    Helpers
@@ -34,20 +38,15 @@ import { ImageUpload }        from './ImageUpload';
 const dataURLtoFile = (dataUrl: string, filename = 'upload.png'): File => {
   const [meta, b64] = dataUrl.split(',');
   const mime = meta.match(/:(.*?);/)?.[1] ?? 'image/png';
-  const bin  = atob(b64);
-  const u8   = Uint8Array.from(bin, c => c.charCodeAt(0));
-  return new File([u8], filename, { type: mime });
+  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+  return new File([bytes], filename, { type: mime });
 };
 
-/* ──────────────────────────────────────────────────────────
-   <CodeBlock />   (renders fenced code with copy button)
-   ------------------------------------------------------------------ */
+/* Code block with copy button */
 const CodeBlock: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // children = <code class="language-xxx">actual code …</code>
-  const child        = children as React.ReactElement;
-  const raw          = child?.props?.children ?? '';
-  const language     =
-    /language-(\w+)/.exec(child?.props?.className || '')?.[1] ?? 'text';
+  const child = children as React.ReactElement;
+  const raw = child?.props?.children ?? '';
+  const language = /language-(\w+)/.exec(child?.props?.className || '')?.[1] ?? 'text';
 
   const [copied, setCopied] = useState(false);
   const onCopy = () => {
@@ -58,7 +57,6 @@ const CodeBlock: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
   return (
     <div className="relative group my-4">
-      {/* copy btn */}
       <button
         onClick={onCopy}
         className="absolute top-2 right-2 z-10 rounded bg-gray-700 text-xs
@@ -68,17 +66,11 @@ const CodeBlock: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         {copied ? 'Copied!' : 'Copy'}
       </button>
 
-      {/* syntax highlighting */}
       <SyntaxHighlighter
         language={language}
         style={oneDark}
-        PreTag="div"           // ⬅ eliminates <pre> nesting warnings
-        customStyle={{
-          borderRadius: '0.5rem',
-          fontSize: '.8rem',
-          margin: 0,
-          overflowX: 'auto',
-        }}
+        PreTag="div"
+        customStyle={{ borderRadius: '0.5rem', fontSize: '.8rem', margin: 0 }}
         wrapLongLines
       >
         {String(raw)}
@@ -88,40 +80,48 @@ const CodeBlock: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 };
 
 /* ──────────────────────────────────────────────────────────
-   ChatInterface component
+   Component
    ------------------------------------------------------------------ */
 export const ChatInterface: React.FC = () => {
-  /* stores */
+  /* global stores */
   const { currentConversationId, reloadConversations } = useChatStore();
-  const user        = useAuthStore((s) => s.user);
-  const socketReady = useSocketStore((s) => s.socketReady);
-  const { fontSize, theme }      = useAppearanceStore();
+  const socketReady = useSocketStore(s => s.socketReady);
+  const user = useAuthStore(s => s.user);
+  const { fontSize, theme } = useAppearanceStore();
+  const { ttsEnabled } = useVoiceStore();          // ← toggle from settings
+
+  /* TTS hook */
+  const { speak, stopSpeaking } = useTextToSpeech();
 
   /* local state */
-  const [messages,      setMessages]      = useState<Message[]>([]);
-  const [inputText,     setInputText]     = useState('');
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [inputText, setInputText] = useState('');
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
-  const [aiThinking,    setAiThinking]    = useState(false);
+  const [aiThinking, setAiThinking] = useState(false);
 
   /* refs */
   const socketRef = useRef<ReturnType<typeof getSocket>>();
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  /* ui helpers */
+  /* derived */
   const isDark =
     theme === 'dark' ||
-    (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+    (theme === 'system' &&
+      window.matchMedia('(prefers-color-scheme: dark)').matches);
 
-  /* ───────── socket attach once ready */
+  /* ───────── attach socket once ready */
   useEffect(() => {
     if (socketReady && !socketRef.current) socketRef.current = getSocket();
   }, [socketReady]);
 
-  /* ───────── room lifecycle */
+  useEffect(() => {
+    if (!ttsEnabled) stopSpeaking();
+  }, [ttsEnabled, stopSpeaking]);
+  /* ───────── join / leave conversation room */
   useEffect(() => {
     if (!socketReady) return;
     const socket = socketRef.current;
-    if (!socket)   return;
+    if (!socket) return;
 
     socket.off('newMessage').off('messageEdited').off('messageRemoved');
 
@@ -132,26 +132,37 @@ export const ChatInterface: React.FC = () => {
 
     socket.on('newMessage', (msg: Message) => {
       if (msg.conversation_id !== Number(currentConversationId)) return;
-      setMessages((p) => [...p, msg]);
-      if (msg.sender === 'ai') setAiThinking(false);
+
+      setMessages(prev => [...prev, msg]);
+
+      if (msg.sender === 'ai') {
+        setAiThinking(false);
+        console.log(ttsEnabled)
+        if (ttsEnabled) {
+          console.log("🧠 AI Message Received:", msg.message_text);
+          stopSpeaking();
+          speak(msg.message_text);
+        }
+      }
     });
 
+
     socket.on('messageEdited', ({ messageId, content }) =>
-      setMessages((p) =>
-        p.map((m) => (m.id === messageId ? { ...m, message_text: content } : m)),
+      setMessages(prev =>
+        prev.map(m => (m.id === messageId ? { ...m, message_text: content } : m)),
       ),
     );
 
     socket.on('messageRemoved', ({ messageId }) =>
-      setMessages((p) => p.filter((m) => m.id !== messageId)),
+      setMessages(prev => prev.filter(m => m.id !== messageId)),
     );
 
     return () => socket.emit('leaveConversation', { conversationId: currentConversationId });
-  }, [socketReady, currentConversationId]);
+  }, [socketReady, currentConversationId, speak, stopSpeaking, ttsEnabled]);
 
   /* autoscroll */
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); },
-            [messages, aiThinking]);
+    [messages, aiThinking]);
 
   /* ───────── send helper */
   const sendMessage = useCallback(
@@ -159,9 +170,9 @@ export const ChatInterface: React.FC = () => {
       if (!user || !currentConversationId) return;
       const socket = socketRef.current;
 
-      const base: Omit<CreateMessageInput,'conversation_id'|'sender'> = {};
-      if (text)  base.message_text = text;
-      if (image) base.file         = dataURLtoFile(image);
+      const base: Omit<CreateMessageInput, 'conversation_id' | 'sender'> = {};
+      if (text) base.message_text = text;
+      if (image) base.file = dataURLtoFile(image);
 
       const payload: CreateMessageInput = {
         conversation_id: Number(currentConversationId),
@@ -170,6 +181,7 @@ export const ChatInterface: React.FC = () => {
       };
 
       setAiThinking(true);
+      stopSpeaking();  // stop TTS while the user is composing new prompt
 
       if (socket?.connected) {
         socket.emit('sendMessage', {
@@ -178,11 +190,11 @@ export const ChatInterface: React.FC = () => {
         });
       } else {
         const saved = await MessageService.send(payload);
-        setMessages((p) => [...p, saved]);
+        setMessages(p => [...p, saved]);
         reloadConversations();
       }
     },
-    [user, currentConversationId, reloadConversations],
+    [user, currentConversationId, reloadConversations, stopSpeaking],
   );
 
   /* form submit */
@@ -196,15 +208,14 @@ export const ChatInterface: React.FC = () => {
   };
 
   /* guards */
-  if (!socketReady)           return <Center>Connecting…</Center>;
+  if (!socketReady) return <Center>Connecting…</Center>;
   if (!currentConversationId) return <Center>Select or start a chat</Center>;
 
   /* bubble util */
   const bubble = (mine = false) =>
-    `max-w-[85%] rounded-2xl p-3 shadow ${
-      mine
-        ? 'bg-blue-600 text-white rounded-tr-none'
-        : isDark
+    `max-w-[85%] rounded-2xl p-3 shadow ${mine
+      ? 'bg-blue-600 text-white rounded-tr-none'
+      : isDark
         ? 'bg-gray-700 text-white rounded-tl-none'
         : 'bg-gray-100 text-gray-900 rounded-tl-none'
     }`;
@@ -214,9 +225,8 @@ export const ChatInterface: React.FC = () => {
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* messages */}
       <motion.div
-        className={`flex-1 overflow-y-auto p-4 ${
-          isDark ? 'bg-gray-800/50' : 'bg-white/50'
-        } rounded-xl`}
+        className={`flex-1 overflow-y-auto p-4 ${isDark ? 'bg-gray-800/50' : 'bg-white/50'
+          } rounded-xl`}
         initial={{ opacity: 0 }} animate={{ opacity: 1 }}
       >
         <AnimatePresence mode="popLayout">
@@ -235,19 +245,17 @@ export const ChatInterface: React.FC = () => {
                   <img src={m.message_text} alt="" className="rounded-lg max-h-40 mb-2" />
                 ) : (
                   <div
-                    className={`prose dark:prose-invert break-words max-w-none ${
-                      fontSize === 'small'
-                        ? 'text-sm'
-                        : fontSize === 'large'
+                    className={`prose dark:prose-invert break-words max-w-none ${fontSize === 'small'
+                      ? 'text-sm'
+                      : fontSize === 'large'
                         ? 'text-lg'
                         : 'text-base'
-                    }`}
+                      }`}
                   >
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
                       rehypePlugins={[rehypeRaw]}
                       components={{
-                        /* inline code stays as <code> … */
                         code({ inline, className, children }) {
                           if (inline) {
                             return (
@@ -256,10 +264,8 @@ export const ChatInterface: React.FC = () => {
                               </code>
                             );
                           }
-                          // for fenced blocks we let <pre> be handled by CodeBlock via `pre`
-                          return <>{children}</>;
+                          return <>{children}</>; // handled in <pre>
                         },
-                        /* override <pre> for fenced blocks  */
                         pre: CodeBlock,
                       }}
                     >
@@ -269,15 +275,17 @@ export const ChatInterface: React.FC = () => {
                 )}
 
                 <div
-                  className={`text-[10px] text-right ${
-                    m.sender === 'user'
-                      ? 'opacity-70'
-                      : isDark
+                  className={`text-[10px] text-right ${m.sender === 'user'
+                    ? 'opacity-70'
+                    : isDark
                       ? 'text-gray-400'
                       : 'text-gray-600'
-                  }`}
+                    }`}
                 >
-                  {new Date(m.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  {new Date(m.created_at).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  })}
                 </div>
               </div>
             </motion.div>
@@ -320,12 +328,11 @@ export const ChatInterface: React.FC = () => {
         <div className="flex gap-2 mt-3">
           <input
             disabled={aiThinking}
-            className={`flex-1 rounded-lg px-4 py-2 focus:outline-none ${
-              isDark ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-900'
-            } ${aiThinking ? 'opacity-50 cursor-not-allowed' : ''}`}
+            className={`flex-1 rounded-lg px-4 py-2 focus:outline-none ${isDark ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-900'
+              } ${aiThinking ? 'opacity-50 cursor-not-allowed' : ''}`}
             placeholder={aiThinking ? 'Waiting for assistant…' : 'Type a message…'}
             value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            onChange={e => setInputText(e.target.value)}
           />
 
           <button
@@ -341,7 +348,7 @@ export const ChatInterface: React.FC = () => {
   );
 };
 
-/* —──────────────────────────────────────────────────────── */
+/* Utility for empty states */
 function Center({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex-1 flex items-center justify-center text-gray-400">

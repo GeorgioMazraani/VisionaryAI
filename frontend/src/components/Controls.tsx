@@ -13,7 +13,6 @@ interface ControlsProps {
   onToggleCamera: () => void;
   onToggleMic:    () => void;
   onToggleTts:    () => void;
-  onClearChat:    () => void;
 }
 
 export const Controls: React.FC<ControlsProps> = ({
@@ -24,7 +23,6 @@ export const Controls: React.FC<ControlsProps> = ({
   onToggleCamera,
   onToggleMic,
   onToggleTts,
-  onClearChat,
 }) => {
   /* button definitions */
   const controls = [
@@ -48,13 +46,7 @@ export const Controls: React.FC<ControlsProps> = ({
       active: isTtsEnabled,
       onClick: onToggleTts,
       disabled: isProcessing,
-    },
-    {
-      icon: Trash2,
-      label: 'Clear',
-      onClick: onClearChat,
-      disabled: isProcessing,
-    },
+    }
   ];
 
   return (
