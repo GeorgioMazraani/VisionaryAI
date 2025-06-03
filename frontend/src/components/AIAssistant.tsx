@@ -120,20 +120,17 @@ export const AIAssistant: React.FC = () => {
         transition={{ type: 'spring', stiffness: 300, damping: 30 }}>
         <ChatInterface inputValue={inputValue} setInputValue={setInput} />
 
-<VoiceRecognition
-  isActive={isMicActive && !isProcessing}
-  initialText={inputValue}
-  onDraft={setInput}
-  onFinal={chunk => {
-    const trimmed = chunk.trim();
-    if (!trimmed) return;
-    if (inputValue.trim().toLowerCase().endsWith(trimmed.toLowerCase())) return; // duplicate guard
-    setInput(prev => `${prev.trim()} ${trimmed}`.trim());
-  }}
-/>
-
-
-
+        <VoiceRecognition
+          isActive={isMicActive && !isProcessing}
+          initialText={inputValue}
+          onDraft={setInput}
+          onFinal={chunk => {
+            const trimmed = chunk.trim();
+            if (!trimmed) return;
+            if (inputValue.trim().toLowerCase().endsWith(trimmed.toLowerCase())) return; // duplicate guard
+            setInput(prev => `${prev.trim()} ${trimmed}`.trim());
+          }}
+        />
       </motion.div>
     </div>
   );

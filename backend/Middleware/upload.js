@@ -12,7 +12,7 @@ const fileFilter = (_req, file, cb) => {
 
 // Generate unique filename: <timestamp>-<random>.<ext>
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, path.join(__dirname, '../../uploads')),
+  destination: (_req, _file, cb) => cb(null, path.join(__dirname, '../uploads')),
   filename: (_req, file, cb) => {
     const ext = path.extname(file.originalname);
     const name = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${ext}`;

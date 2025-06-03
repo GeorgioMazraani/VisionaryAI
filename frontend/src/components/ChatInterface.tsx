@@ -1,50 +1,46 @@
 /* ──────────────────────────────────────────────────────────
-   ChatInterface.tsx – ChatGPT-like flow + Copy + TTS
-   (now supports live speech-to-input coming from AIAssistant)
+   ChatInterface.tsx – ChatGPT-like flow with:
+   • Real-time Socket.IO updates
+   • Multer image uploads
+   • Optional text-to-speech
+   • 100 % copy-paste ready
    ------------------------------------------------------------------ */
 
 import React, {
-  useRef,
-  useEffect,
-  useState,
   FormEvent,
   useCallback,
+  useEffect,
+  useRef,
+  useState,
 } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import ReactMarkdown   from 'react-markdown';
-import remarkGfm       from 'remark-gfm';
-import rehypeRaw       from 'rehype-raw';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { oneDark }     from 'react-syntax-highlighter/dist/esm/styles/prism';
-import copy            from 'copy-to-clipboard';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeRaw from 'rehype-raw';
+import { Prism as Syntax } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import copy from 'copy-to-clipboard';
 
-/* stores / hooks */
-import { getSocket }         from '../utils/socket';
+/* hooks / stores / utils */
+import { getSocket } from '../utils/socket';
 import MessageService, {
   Message,
   CreateMessageInput,
 } from '../services/MessageService';
-import { useSocketStore }     from '../store/socketStore';
-import { useChatStore }       from '../store/chatStore';
-import { useAuthStore }       from '../store/authStore';
+import { useSocketStore } from '../store/socketStore';
+import { useChatStore } from '../store/chatStore';
+import { useAuthStore } from '../store/authStore';
 import { useAppearanceStore } from '../store/appearanceStore';
-import { useVoiceStore }      from '../store/voiceStore';
-import { useTextToSpeech }    from '../hooks/useTextToSpeech';
-import { ImageUpload }        from './ImageUpload';
+import { useVoiceStore } from '../store/voiceStore';
+import { useTextToSpeech } from '../hooks/useTextToSpeech';
+import { ImageUpload } from './ImageUpload';
 
-/* ──────────────────────────────────────────────────────────
-   Helpers
-   ------------------------------------------------------------------ */
-const dataURLtoFile = (dataUrl: string, filename = 'upload.png'): File => {
-  const [meta, b64] = dataUrl.split(',');
-  const mime  = meta.match(/:(.*?);/)?.[1] ?? 'image/png';
-  const bytes = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-  return new File([bytes], filename, { type: mime });
-};
-
+/* ─────────────────────────────────────────────
+   Code-block renderer with one-click copy
+   ──────────────────────────────────────────── */
 const CodeBlock: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const child    = children as React.ReactElement;
-  const raw      = child?.props?.children ?? '';
+  const child = children as React.ReactElement;
+  const raw = child?.props?.children ?? '';
   const language =
     /language-(\w+)/.exec(child?.props?.className || '')?.[1] ?? 'text';
 
@@ -66,7 +62,7 @@ const CodeBlock: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         {copied ? 'Copied!' : 'Copy'}
       </button>
 
-      <SyntaxHighlighter
+      <Syntax
         language={language}
         style={oneDark}
         PreTag="div"
@@ -74,16 +70,16 @@ const CodeBlock: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         wrapLongLines
       >
         {String(raw)}
-      </SyntaxHighlighter>
+      </Syntax>
     </div>
   );
 };
 
-/* ──────────────────────────────────────────────────────────
-   Props – we lift the input’s value so speech can update it
-   ------------------------------------------------------------------ */
+/* ─────────────────────────────────────────────
+   Parent props – value lifted so speech hook can edit it
+   ──────────────────────────────────────────── */
 interface ChatInterfaceProps {
-  inputValue:    string;
+  inputValue: string;
   setInputValue: (v: string) => void;
 }
 
@@ -91,156 +87,159 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   inputValue,
   setInputValue,
 }) => {
-  /* global stores */
+  /* stores */
   const { currentConversationId, reloadConversations } = useChatStore();
-  const socketReady      = useSocketStore(s => s.socketReady);
-  const user             = useAuthStore(s => s.user);
-  const { fontSize,
-          theme }        = useAppearanceStore();
-  const { ttsEnabled }   = useVoiceStore();
-
-  /* speech synthesis */
+  const socketReady = useSocketStore(s => s.socketReady);
+  const user = useAuthStore(s => s.user);
+  const { fontSize, theme } = useAppearanceStore();
+  const { ttsEnabled } = useVoiceStore();
   const { speak, stopSpeaking } = useTextToSpeech();
 
-  /* local state (messages stay self-contained) */
-  const [messages, setMessages]   = useState<Message[]>([]);
-  const [uploadedImage, setUploadImage] = useState<string | null>(null);
-  const [aiThinking, setAiThinking]     = useState(false);
+  /* local state */
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [uploadedImage, setImage] = useState<File | null>(null);
+  const [aiThinking, setAiThinking] = useState(false);
 
   /* refs */
   const socketRef = useRef<ReturnType<typeof getSocket>>();
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  /* theme helper */
   const isDark =
     theme === 'dark' ||
     (theme === 'system' &&
       window.matchMedia('(prefers-color-scheme: dark)').matches);
 
-  /* attach socket when ready */
+  /* attach socket once ready */
   useEffect(() => {
     if (socketReady && !socketRef.current) socketRef.current = getSocket();
   }, [socketReady]);
 
-  /* disable TTS immediately when toggled off */
-  useEffect(() => {
-    if (!ttsEnabled) stopSpeaking();
-  }, [ttsEnabled, stopSpeaking]);
+  /* TTS off → stop speaking immediately */
+  useEffect(() => { if (!ttsEnabled) stopSpeaking(); }, [ttsEnabled, stopSpeaking]);
 
-  /* room lifecycle */
+  /* join/leave rooms + wire socket listeners */
   useEffect(() => {
     if (!socketReady) return;
     const socket = socketRef.current;
     if (!socket) return;
 
+    /* clear previous listeners */
     socket.off('newMessage')
-          .off('messageEdited')
-          .off('messageRemoved');
+      .off('messageEdited')
+      .off('messageRemoved');
 
+    /* no conversation selected */
     if (!currentConversationId) { setMessages([]); return; }
 
     socket.emit('joinConversation', { conversationId: currentConversationId });
     MessageService.list(currentConversationId).then(setMessages);
 
+    /* new message */
     socket.on('newMessage', (msg: Message) => {
       if (msg.conversation_id !== Number(currentConversationId)) return;
-
       setMessages(prev => [...prev, msg]);
 
       if (msg.sender === 'ai') {
         setAiThinking(false);
-        if (ttsEnabled) {
-          stopSpeaking();
-          speak(msg.message_text);
-        }
+        if (ttsEnabled) { stopSpeaking(); speak(msg.message_text); }
       }
     });
 
+    /* edit */
     socket.on('messageEdited', ({ messageId, content }) =>
       setMessages(prev =>
-        prev.map(m =>
-          m.id === messageId ? { ...m, message_text: content } : m,
-        ),
+        prev.map(m => (m.id === messageId ? { ...m, message_text: content } : m)),
       ),
     );
 
+    /* delete */
     socket.on('messageRemoved', ({ messageId }) =>
       setMessages(prev => prev.filter(m => m.id !== messageId)),
     );
 
+    /* leave on unmount */
     return () =>
       socket.emit('leaveConversation', { conversationId: currentConversationId });
   }, [socketReady, currentConversationId, speak, stopSpeaking, ttsEnabled]);
 
   /* autoscroll */
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, aiThinking]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [messages, aiThinking]);
 
-  /* ───────── submit helper */
+  /* ───────────── helper – send (text + file) */
   const sendMessage = useCallback(
-    async (text: string, img?: string | null) => {
+    async (text: string, img?: File | null) => {
       if (!user || !currentConversationId) return;
       const socket = socketRef.current;
 
-      const base: Omit<CreateMessageInput, 'conversation_id' | 'sender'> = {};
-      if (text) base.message_text = text;
-      if (img)  base.file         = dataURLtoFile(img);
+      let imageUrl: string | null = null;
 
-      const payload: CreateMessageInput = {
-        conversation_id: Number(currentConversationId),
-        sender: 'user',
-        ...base,
-      };
+      /* 1. upload image to REST if present */
+      if (img) {
+        const fd = new FormData();
+        fd.append('file', img);
+        fd.append('conversation_id', String(currentConversationId));
+        fd.append('sender', 'user');
+
+        const msg = await MessageService.rawUpload(fd);
+        imageUrl = msg.message_text; // ✅ pass only URL back
+      }
+
+
+      /* 2. emit socket so everyone + AI get it */
+      socket?.emit('sendMessage', {
+        conversationId: currentConversationId,
+        text: text || null,
+        imageUrl,
+      });
+
+      /* 3. fallback (socket disconnected) for pure-text */
+      if (!socket?.connected && text) {
+        const saved = await MessageService.send({
+          conversation_id: currentConversationId,
+          sender: 'user',
+          message_text: text,
+        } as CreateMessageInput);
+        setMessages(prev => [...prev, saved]);
+        reloadConversations();
+      }
 
       setAiThinking(true);
       stopSpeaking();
-
-      if (socket?.connected) {
-        socket.emit('sendMessage', {
-          conversationId: payload.conversation_id,
-          text: payload.message_text ?? null,
-        });
-      } else {
-        const saved = await MessageService.send(payload);
-        setMessages(p => [...p, saved]);
-        reloadConversations();
-      }
     },
     [user, currentConversationId, reloadConversations, stopSpeaking],
   );
 
+  /* form submit */
   const handleSubmit = (e: FormEvent) => {
     e.preventDefault();
     if (aiThinking) return;
     if (!inputValue.trim() && !uploadedImage) return;
+
     sendMessage(inputValue.trim(), uploadedImage);
     setInputValue('');
-    setUploadImage(null);
+    setImage(null);
   };
 
-  /* bubble helper */
+  /* bubble css helper */
   const bubble = (mine = false) =>
-    `max-w-[85%] rounded-2xl p-3 shadow ${
-      mine
-        ? 'bg-blue-600 text-white rounded-tr-none'
-        : isDark
+    `max-w-[85%] rounded-2xl p-3 shadow ${mine
+      ? 'bg-blue-600 text-white rounded-tr-none'
+      : isDark
         ? 'bg-gray-700 text-white rounded-tl-none'
         : 'bg-gray-100 text-gray-900 rounded-tl-none'
     }`;
 
   /* guards */
-  if (!socketReady)           return <Center>Connecting…</Center>;
+  if (!socketReady) return <Center>Connecting…</Center>;
   if (!currentConversationId) return <Center>Select or start a chat</Center>;
 
-  /* ───────── UI */
+  /* ───────────── UI */
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* messages list */}
+      {/* messages */}
       <motion.div
-        className={`flex-1 overflow-y-auto p-4 ${
-          isDark ? 'bg-gray-800/50' : 'bg-white/50'
-        } rounded-xl`}
+        className={`flex-1 overflow-y-auto p-4 ${isDark ? 'bg-gray-800/50' : 'bg-white/50'
+          } rounded-xl`}
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
       >
@@ -248,9 +247,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           {messages.map((m, idx) => (
             <motion.div
               key={m.id}
-              className={`flex ${
-                m.sender === 'user' ? 'justify-end' : 'justify-start'
-              }`}
+              className={`flex ${m.sender === 'user' ? 'justify-end' : 'justify-start'}`}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0 }}
@@ -259,19 +256,19 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
               <div className={bubble(m.sender === 'user')}>
                 {m.message_type === 'image' ? (
                   <img
-                    src={m.message_text}
+                    src={`http://localhost:5000${m.message_text.replace(/\\/g, '/')}`}
                     alt=""
                     className="rounded-lg max-h-40 mb-2"
                   />
+
                 ) : (
                   <div
-                    className={`prose dark:prose-invert break-words max-w-none ${
-                      fontSize === 'small'
-                        ? 'text-sm'
-                        : fontSize === 'large'
+                    className={`prose dark:prose-invert break-words max-w-none ${fontSize === 'small'
+                      ? 'text-sm'
+                      : fontSize === 'large'
                         ? 'text-lg'
                         : 'text-base'
-                    }`}
+                      }`}
                   >
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
@@ -295,13 +292,12 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
                 )}
 
                 <div
-                  className={`text-[10px] text-right ${
-                    m.sender === 'user'
-                      ? 'opacity-70'
-                      : isDark
+                  className={`text-[10px] text-right ${m.sender === 'user'
+                    ? 'opacity-70'
+                    : isDark
                       ? 'text-gray-400'
                       : 'text-gray-600'
-                  }`}
+                    }`}
                 >
                   {new Date(m.created_at).toLocaleTimeString([], {
                     hour: '2-digit',
@@ -335,25 +331,23 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
       {/* composer */}
       <motion.form
         onSubmit={handleSubmit}
-        className={`mt-4 p-4 ${
-          isDark ? 'bg-gray-800' : 'bg-white'
-        } rounded-xl shadow-lg`}
+        className={`mt-4 p-4 ${isDark ? 'bg-gray-800' : 'bg-white'}
+                    rounded-xl shadow-lg`}
         initial={{ y: 20, opacity: 0 }}
         animate={{ y: 0, opacity: 1 }}
       >
-        <ImageUpload
-          onImageSelect={setUploadImage}
-          selectedImage={uploadedImage}
-          onClear={() => setUploadImage(null)}
-          disabled={aiThinking}
-        />
+        <div className="flex items-center gap-3">
+          <ImageUpload
+            onImageSelect={setImage}
+            selectedImage={uploadedImage}
+            onClear={() => setImage(null)}
+            disabled={aiThinking}
+          />
 
-        <div className="flex gap-2 mt-3">
           <input
             disabled={aiThinking}
-            className={`flex-1 rounded-lg px-4 py-2 focus:outline-none ${
-              isDark ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-900'
-            } ${aiThinking ? 'opacity-50 cursor-not-allowed' : ''}`}
+            className={`flex-1 rounded-lg px-4 py-2 focus:outline-none ${isDark ? 'bg-gray-700 text-white' : 'bg-gray-100 text-gray-900'
+              } ${aiThinking ? 'opacity-50 cursor-not-allowed' : ''}`}
             placeholder={
               aiThinking ? 'Waiting for assistant…' : 'Type a message…'
             }
@@ -364,7 +358,8 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
           <button
             type="submit"
             disabled={aiThinking || (!inputValue.trim() && !uploadedImage)}
-            className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg
+                       hover:bg-blue-700 disabled:opacity-50"
           >
             Send
           </button>
@@ -374,7 +369,7 @@ export const ChatInterface: React.FC<ChatInterfaceProps> = ({
   );
 };
 
-/* empty-state helper */
+/* ───── empty-state helper ───── */
 const Center: React.FC<{ children: React.ReactNode }> = ({ children }) => (
   <div className="flex-1 flex items-center justify-center text-gray-400">
     {children}

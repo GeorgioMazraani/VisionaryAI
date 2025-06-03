@@ -11,40 +11,55 @@ const openai = new OpenAI({
 
 class AIRequestService {
   /** Send a prompt to GPT-4o and persist the request/response */
-  static async create({ conversation_id, prompt }) {
-    // Verify conversation exists
-    const convo = await Conversation.findByPk(conversation_id);
-    if (!convo) throw new Error('Conversation not found');
+  /** Send a prompt to GPT-4o and persist the request/response */
+static async create({ conversation_id, prompt, image_url = null }) {
+  // Verify conversation exists
+  const convo = await Conversation.findByPk(conversation_id);
+  if (!convo) throw new Error('Conversation not found');
 
-    let success = true;
-    let responseText = null;
-    let latencyMs = null;
+  let success = true;
+  let responseText = null;
+  let latencyMs = null;
 
-    const start = performance.now();
-    try {
-      const completion = await openai.chat.completions.create({
-        model: 'gpt-4o',
-        messages: [{ role: 'user', content: prompt }],
-      });
-      latencyMs     = Math.round(performance.now() - start);
-      responseText  = completion.choices?.[0]?.message?.content ?? '';
-    } catch (err) {
-      latencyMs    = Math.round(performance.now() - start);
-      success      = false;
-      responseText = `ERROR: ${err.message}`;
-    }
+  const start = performance.now();
+  try {
+    const messages = [
+      {
+        role: "user",
+        content: [
+          { type: "text", text: prompt || "Describe the image" },
+          ...(image_url
+            ? [{ type: "image_url", image_url: { url: image_url } }]
+            : []),
+        ],
+      },
+    ];
 
-    // Persist log
-    const record = await AIRequest.create({
-      conversation_id,
-      prompt,
-      response: responseText,
-      success,
-      latency_ms: latencyMs,
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages,
     });
 
-    return record;
+    latencyMs     = Math.round(performance.now() - start);
+    responseText  = completion.choices?.[0]?.message?.content ?? '';
+  } catch (err) {
+    latencyMs    = Math.round(performance.now() - start);
+    success      = false;
+    responseText = `ERROR: ${err.message}`;
   }
+
+  // Persist log
+  const record = await AIRequest.create({
+    conversation_id,
+    prompt,
+    response: responseText,
+    success,
+    latency_ms: latencyMs,
+  });
+
+  return record;
+}
+
 
   /** Retrieve a single log */
   static async findById(id) {

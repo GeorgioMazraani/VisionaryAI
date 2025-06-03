@@ -1,69 +1,94 @@
 import React, { useRef } from 'react';
 import { ImagePlus } from 'lucide-react';
 
+/* ─────────────────────────────────────────────
+   Props
+   ──────────────────────────────────────────── */
 interface ImageUploadProps {
-  onImageSelect: (dataUrl: string) => void;
-  selectedImage: string | null;
+  /** Returns the raw File that should be uploaded with Multer */
+  onImageSelect: (file: File) => void;
+
+  /** The file picked by the user (or null if none) */
+  selectedImage: File | null;
+
+  /** Clear the selection */
   onClear: () => void;
+
+  /** Disable interaction (e.g. while AI is thinking) */
+  disabled?: boolean;
 }
 
+/* ─────────────────────────────────────────────
+   Component
+   ──────────────────────────────────────────── */
 export const ImageUpload: React.FC<ImageUploadProps> = ({
   onImageSelect,
   selectedImage,
-  onClear
+  onClear,
+  disabled = false,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  /* Handle <input type=file> changes */
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 5 * 1024 * 1024) { // 5MB limit
-        alert('Please select an image under 5MB');
-        return;
-      }
+    if (!file) return;
 
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const dataUrl = e.target?.result as string;
-        onImageSelect(dataUrl);
-      };
-      reader.readAsDataURL(file);
+    /* 5 MB guard */
+    if (file.size > 5 * 1024 * 1024) {
+      alert('Please select an image under 5 MB');
+      return;
     }
+
+    onImageSelect(file); // hand raw file up
   };
 
+  /* Quick preview URL (revoked automatically by browser GC) */
+  const preview = selectedImage ? URL.createObjectURL(selectedImage) : null;
+
   return (
-    <div className="relative">
-      {selectedImage ? (
-        <div className="relative inline-block">
+    <div className="relative inline-block">
+      {selectedImage && preview ? (
+        <>
           <img
-            src={selectedImage}
+            src={preview}
             alt="Selected"
             className="max-h-20 rounded-lg"
           />
           <button
-            onClick={onClear}
-            className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-6 h-6 flex items-center justify-center hover:bg-red-600"
             type="button"
+            disabled={disabled}
+            onClick={onClear}
+            className="absolute -top-2 -right-2 bg-red-500 text-white
+                       rounded-full w-6 h-6 flex items-center justify-center
+                       hover:bg-red-600 disabled:opacity-40"
           >
             ×
           </button>
-        </div>
+        </>
       ) : (
-        <div 
+        <button
+          type="button"
+          disabled={disabled}
           onClick={() => fileInputRef.current?.click()}
-          className="inline-flex items-center gap-2 text-gray-400 hover:text-gray-300 cursor-pointer transition-colors"
+          className={`inline-flex items-center gap-2 text-gray-400
+                      hover:text-gray-300 transition-colors
+                      ${disabled ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
         >
-          <div className="w-6 h-6 flex items-center justify-center">
+          <span className="w-6 h-6 flex items-center justify-center">
             <ImagePlus className="w-5 h-5" />
-          </div>
-        </div>
+          </span>
+        </button>
       )}
+
+      {/* Hidden file input */}
       <input
         ref={fileInputRef}
         type="file"
         accept="image/*"
         onChange={handleFileSelect}
         className="hidden"
+        disabled={disabled}
       />
     </div>
   );

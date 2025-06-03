@@ -46,6 +46,16 @@ const list = async (conversationId: string): Promise<Message[]> => {
   return res.data;
 };
 
+// For raw image uploads before socket emit
+const rawUpload = async (formData: FormData): Promise<Message> => {
+  const res = await http.post<Message>("/messages", formData, {
+    headers: {
+      Authorization: getTokenBearer(),
+      "Content-Type": "multipart/form-data",
+    },
+  });
+  return res.data;
+};
 
 // ───── DELETE MESSAGE ─────
 const remove = async (id: number) => {
@@ -68,6 +78,7 @@ const MessageService = {
   list,
   remove,
   get,
+  rawUpload
 };
 
 export default MessageService;
